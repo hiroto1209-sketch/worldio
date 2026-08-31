@@ -1,13 +1,15 @@
 {
+  "id": "./",
   "name": "Worldio — World Radio",
   "short_name": "Worldio",
-  "description": "Ad-free world internet radio player",
+  "description": "地球を回して世界のラジオに出会う、広告なしのインターネットラジオプレイヤー",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#030807",
-  "theme_color": "#030807",
+  "background_color": "#020706",
+  "theme_color": "#020706",
   "orientation": "portrait-primary",
+  "categories": ["music", "entertainment", "travel"],
   "icons": [
     {"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
   ]
