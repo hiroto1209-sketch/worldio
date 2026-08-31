@@ -1,0 +1,14 @@
+{
+  "name": "Worldio — World Radio",
+  "short_name": "Worldio",
+  "description": "Ad-free world internet radio player",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#030807",
+  "theme_color": "#030807",
+  "orientation": "portrait-primary",
+  "icons": [
+    {"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
