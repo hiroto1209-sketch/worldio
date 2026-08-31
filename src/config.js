@@ -1,0 +1,9 @@
+export const APP_VERSION='4.0.0';
+export const RADIO_MIRRORS=['https://de1.api.radio-browser.info','https://nl1.api.radio-browser.info'];
+export const FAST_STATION_LIMIT=700;
+export const FULL_STATION_LIMIT=1600;
+export const STATION_CACHE_KEY='worldio:stations:v4';
+export const FAVORITES_KEY='worldio:favs';
+export const RECENT_KEY='worldio:recent';
+export const MAPLIBRE_JS=['https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js','https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.1/dist/maplibre-gl.js'];
+export const MAPLIBRE_CSS='https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css';
