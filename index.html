@@ -46,7 +46,29 @@ const map=new maplibregl.Map({container:'map',style:'https://demotiles.maplibre.
 map.on('load',()=>{mapReady=true;try{map.setProjection({type:'globe'});map.setFog({color:'rgb(2,4,8)','high-color':'rgb(9,15,26)','horizon-blend':0.055,'space-color':'rgb(0,1,8)','star-intensity':.62})}catch(e){};if(stationPool.length)addStationsToMap();syncMapTheme()});
 function stationGeoJson(){return{type:'FeatureCollection',features:stationPool.filter(s=>Number.isFinite(+s.geo_lat)&&Number.isFinite(+s.geo_long)).map(s=>({type:'Feature',geometry:{type:'Point',coordinates:[+s.geo_long,+s.geo_lat]},properties:{id:s.stationuuid,name:s.name,country:s.countrycode||'',favicon:s.favicon||''}}))}}
 function addStationsToMap(){if(!mapReady)return;const data=stationGeoJson();if(map.getSource('stations')){map.getSource('stations').setData(data);syncMapTheme();return}map.addSource('stations',{type:'geojson',data,cluster:true,clusterMaxZoom:7,clusterRadius:38});map.addLayer({id:'clusters',type:'circle',source:'stations',filter:['has','point_count'],paint:{'circle-color':rgba(themeColor,.25),'circle-radius':['step',['get','point_count'],12,15,16,40,21],'circle-stroke-width':1,'circle-stroke-color':rgba(themeColor,.82)}});map.addLayer({id:'cluster-count',type:'symbol',source:'stations',filter:['has','point_count'],layout:{'text-field':['get','point_count_abbreviated'],'text-size':10},paint:{'text-color':'#dffff0'}});map.addLayer({id:'station-points',type:'circle',source:'stations',filter:['!',['has','point_count']],paint:{'circle-color':themeColor,'circle-radius':['interpolate',['linear'],['zoom'],1,2.2,6,5.2],'circle-blur':.15,'circle-stroke-color':rgba(themeColor,.26),'circle-stroke-width':['interpolate',['linear'],['zoom'],1,3,6,8]}});map.on('click','clusters',async e=>{const f=e.features[0];const zoom=await map.getSource('stations').getClusterExpansionZoom(f.properties.cluster_id);map.easeTo({center:f.geometry.coordinates,zoom:Math.min(zoom,8)})});map.on('click','station-points',e=>{const id=e.features[0].properties.id;const s=stationPool.find(x=>x.stationuuid===id);if(s)selectStation(s,true)});map.on('mouseenter','station-points',()=>map.getCanvas().style.cursor='pointer');map.on('mouseleave','station-points',()=>map.getCanvas().style.cursor='');markersLoaded=true}
-async function loadPool(){status('世界のラジオ局を読み込み中…');try{await discoverMirrors();stationPool=await api('/json/stations/search?hidebroken=true&has_geo_info=true&order=clickcount&reverse=true&limit=3500');stationPool=stationPool.filter(s=>s.stationuuid&&s.url_resolved);addStationsToMap();status(`${stationPool.length.toLocaleString()}局を地球に表示 · 光点をタップ`)}catch(e){status('局データを取得できません。再読み込みしてください')}}
+function idle(fn,timeout=1200){if('requestIdleCallback'in window)requestIdleCallback(fn,{timeout});else setTimeout(fn,80)}
+function mergeStations(list){const m=new Map(stationPool.map(s=>[s.stationuuid,s]));for(const s of list){if(s&&s.stationuuid&&s.url_resolved)m.set(s.stationuuid,s)}stationPool=[...m.values()]}
+async function loadMoreStations(){
+  try{
+    await discoverMirrors();
+    const more=await api('/json/stations/search?hidebroken=true&has_geo_info=true&order=clickcount&reverse=true&limit=3000&offset=500');
+    mergeStations(more);
+    idle(()=>{addStationsToMap();status(`${stationPool.length.toLocaleString()}局を地球に表示 · 光点をタップ`)},1800)
+  }catch(e){}
+}
+async function loadPool(){
+  status('地球を起動しています…');
+  try{
+    const first=await api('/json/stations/search?hidebroken=true&has_geo_info=true&order=clickcount&reverse=true&limit=500');
+    mergeStations(first);
+    addStationsToMap();
+    status(`${stationPool.length.toLocaleString()}局からすぐ探索できます · 残りはバックグラウンド読込中`);
+    idle(loadMoreStations,1400)
+  }catch(e){
+    status('局データを取得できません。検索は引き続き利用できます');
+    idle(loadMoreStations,800)
+  }
+}
 function distance(a,b,c,d){const R=6371,rad=x=>x*Math.PI/180;const x=rad(c-a),y=rad(d-b);const z=Math.sin(x/2)**2+Math.cos(rad(a))*Math.cos(rad(c))*Math.sin(y/2)**2;return 2*R*Math.asin(Math.sqrt(z))}
 function nearest(){const c=map.getCenter();return stationPool.filter(s=>s.geo_lat!=null&&s.geo_long!=null).map(s=>({...s,_d:distance(c.lat,c.lng,+s.geo_lat,+s.geo_long)})).sort((a,b)=>a._d-b._d).slice(0,30)}
 function showList(list,title){$('#panelTitle').textContent=title;results.innerHTML='';if(!list.length){results.innerHTML='<div class="empty">該当する局がありません</div>';sheet.classList.add('show');return}list.slice(0,40).forEach(s=>{const row=document.createElement('div');row.className='result';const img=s.favicon?`<img src="${esc(s.favicon)}" onerror="this.remove()">`:'◉';row.innerHTML=`<div class="resultArt">${img}</div><div class="resultMeta"><div class="resultName">${esc(s.name)}</div><div class="resultSub">${esc([s.countrycode,s.state,s.codec,s.bitrate?`${s.bitrate}kbps`:null].filter(Boolean).join(' · '))}</div></div><button class="resultPlay">再生</button>`;row.querySelector('button').onclick=()=>selectStation(s,true);results.appendChild(row)});sheet.classList.add('show')}
@@ -56,7 +78,9 @@ async function selectStation(s,autoplay=false){current=s;$('#stationName').textC
 $('#playBtn').onclick=async()=>{if(!current){showList(nearest(),'近くのラジオ局');return}if(audio.paused){try{await audio.play();$('#playBtn').textContent='❚❚';$('#liveLabel').style.visibility='visible';status('LIVE · '+current.name)}catch(e){toast('再生できません')}}else{audio.pause();$('#playBtn').textContent='▶';$('#liveLabel').style.visibility='hidden';status('一時停止')}};audio.onplaying=()=>{$('#playBtn').textContent='❚❚';$('#liveLabel').style.visibility='visible'};audio.onpause=()=>{$('#playBtn').textContent='▶';$('#liveLabel').style.visibility='hidden'};audio.onerror=()=>{if(current){status('ストリーム接続失敗 · 別の局を選んでください');$('#playBtn').textContent='▶';$('#liveLabel').style.visibility='hidden'}};$('#volume').oninput=e=>audio.volume=+e.target.value;audio.volume=.85;
 $('#favBtn').onclick=()=>{if(!current)return;if(isFav(current)){favorites=favorites.filter(x=>x.stationuuid!==current.stationuuid);toast('お気に入りから削除')}else{favorites.unshift(current);favorites=favorites.slice(0,100);toast('お気に入りに追加')}localStorage.setItem('worldio:favs',JSON.stringify(favorites));updateFav()};$('#favListBtn').onclick=()=>showList(favorites,'お気に入り');$('#nearBtn').onclick=()=>showList(nearest(),'この場所の近く');$('#randomBtn').onclick=()=>{if(!stationPool.length)return;selectStation(stationPool[Math.floor(Math.random()*stationPool.length)],true)};$('#closeSheet').onclick=()=>sheet.classList.remove('show');sheet.onclick=e=>{if(e.target===sheet)sheet.classList.remove('show')};$('#themeBtn').onclick=showTheme;$('#themeBtn').onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();showTheme()}};
 $('#searchForm').onsubmit=async e=>{e.preventDefault();const q=$('#search').value.trim();if(!q)return;status('検索中 · '+q);try{let list=await api('/json/stations/search?hidebroken=true&limit=40&order=clickcount&reverse=true&name='+encodeURIComponent(q));if(list.length<8){const byCountry=await api('/json/stations/search?hidebroken=true&limit=30&order=clickcount&reverse=true&country='+encodeURIComponent(q)).catch(()=>[]);const byTag=await api('/json/stations/search?hidebroken=true&limit=30&order=clickcount&reverse=true&tag='+encodeURIComponent(q)).catch(()=>[]);const m=new Map([...list,...byCountry,...byTag].map(s=>[s.stationuuid,s]));list=[...m.values()].slice(0,40)}showList(list,`検索 · ${q}`);status(`${list.length}局見つかりました`)}catch(e){status('検索に失敗しました');toast('通信エラー')}};
-if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));loadPool();
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+status('WORLDIO · 地球を準備中…');
+if(mapReady)idle(loadPool,500);else map.once('load',()=>idle(loadPool,500));
 </script>
 </body>
 </html>
