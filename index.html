@@ -50,10 +50,14 @@ function angularDistanceDeg(aLon,aLat,bLon,bLat){const r=Math.PI/180,p1=aLat*r,p
    The Sun direction comes only from UTC/date (solarSubpoint) and the Earth-facing camera state.
    It is never moved to a fixed screen ring and is never forced to remain visible.
    When the Sun is on the far hemisphere it is occluded by Earth. */
-function updateSunVisual(){const el=$('#sunVisual');if(!el||!mapReady||!dayNightEnabled){if(el)el.style.opacity='0';return}const s=solarSubpoint(),center=map.getCenter(),separation=angularDistanceDeg(center.lng,center.lat,s.lon,s.lat);if(separation>91){el.style.opacity='0';return}const p=map.project([s.lon,s.lat]),rect=map.getContainer().getBoundingClientRect(),cx=rect.width/2,cy=rect.height/2,dx=p.x-cx,dy=p.y-cy,projected=Math.hypot(dx,dy);if(!Number.isFinite(projected)){el.style.opacity='0';return}const earthRadius=Math.min(rect.width,rect.height)*.39,rad=separation*Math.PI/180;
-/* Finite educational scene distance: screen displacement follows the real angular
-   Sun/Earth geometry instead of a camera-facing fixed-radius correction. */
-const sceneDistance=2.65,radial=earthRadius*sceneDistance*Math.sin(rad),len=projected||1,x=cx+(dx/len)*radial,y=cy+(dy/len)*radial;const margin=90;if(x<-margin||x>rect.width+margin||y<-margin||y>rect.height+margin){el.style.opacity='0';return}el.style.left=x+'px';el.style.top=y+'px';el.style.opacity=separation<1?.82:'1'}
+function updateSunVisual(){const el=$('#sunVisual');if(!el||!mapReady||!dayNightEnabled){if(el)el.style.opacity='0';return}const s=solarSubpoint(),center=map.getCenter(),separation=angularDistanceDeg(center.lng,center.lat,s.lon,s.lat),p=map.project([s.lon,s.lat]),rect=map.getContainer().getBoundingClientRect(),cx=rect.width/2,cy=rect.height/2,dx=p.x-cx,dy=p.y-cy,projected=Math.hypot(dx,dy);if(!Number.isFinite(projected)){el.style.opacity='0';return}const earthRadius=Math.min(rect.width,rect.height)*.39,rad=separation*Math.PI/180,sceneDistance=2.65;
+/* The Sun always exists in the scene. Its projected orbit continues through the
+   camera-opposite hemisphere; Earth itself supplies the visual occlusion. */
+const frontDepth=Math.cos(rad),radial=earthRadius*sceneDistance*Math.sin(rad),len=projected||1,x=cx+(dx/len)*radial,y=cy+(dy/len)*radial,screenDist=Math.hypot(x-cx,y-cy),sunRadius=30;
+/* Only hide while the continuous Sun path is physically behind the globe's disc.
+   Once its projected path clears the limb it becomes visible again on the far side. */
+const occulted=frontDepth<0&&screenDist<earthRadius+sunRadius*.35;
+const margin=90;if(occulted||x<-margin||x>rect.width+margin||y<-margin||y>rect.height+margin){el.style.opacity='0';return}el.style.left=x+'px';el.style.top=y+'px';el.style.opacity=separation<1?.82:'1'}
 function syncDayNight(){if(!mapReady)return;try{ensureDayNight();for(const id of ['twilight-18','twilight-12','twilight-6','night-side']){map.setLayoutProperty(id+'-fill','visibility',dayNightEnabled?'visible':'none');if(dayNightEnabled){const alt=id==='night-side'?0:-Number(id.split('-')[1]);map.getSource(id).setData(solarAltitudeBoundaryGeoJson(alt))}}map.setLayoutProperty('terminator-line','visibility',dayNightEnabled?'visible':'none');updateSunVisual()}catch(e){}}
 function flagEmoji(code){return /^[A-Za-z]{2}$/.test(code||'')?[...code.toUpperCase()].map(ch=>String.fromCodePoint(127397+ch.charCodeAt())).join(''):'🌍'}
 function approxLocalTime(lon){const offset=Math.round((+lon||0)/15);const d=new Date(Date.now()+offset*3600000);return d.toLocaleTimeString('ja-JP',{timeZone:'UTC',hour:'2-digit',minute:'2-digit',hour12:false})+'頃'}
