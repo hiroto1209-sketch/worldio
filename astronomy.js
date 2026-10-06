@@ -3,15 +3,21 @@
 
 const DEG=Math.PI/180;
 const TAU=Math.PI*2;
-const TWILIGHT_EPSILON=0.045;
-const MAX_NIGHT_ALPHA=0.57;
+const TWILIGHT_EPSILON=0.028;
+const MAX_NIGHT_ALPHA=0.94;
 
 let canvas,ctx,galaxy,galaxyCtx,lightCanvas,lightCtx;
 let raf=0,w=0,h=0,dpr=1,started=false;
+let lightingKey='';
+let meteors=[];
+let ufo=null;
+let meteorTimer=0;
+let ufoTimer=0;
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const smoothstep=t=>t*t*(3-2*t);
+const easeInOut=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
 
 function vecFromLonLat(lon,lat){
   const p=lat*DEG,l=lon*DEG,c=Math.cos(p);
@@ -30,6 +36,10 @@ function cameraBasis(){
 
 function astronomyEnabled(){
   try{return dayNightEnabled!==false}catch(e){return true}
+}
+
+function motionAllowed(){
+  try{return !window.matchMedia('(prefers-reduced-motion: reduce)').matches}catch(e){return true}
 }
 
 function addStyle(){
@@ -122,6 +132,7 @@ function resize(){
     canvas.style.width=w+'px';
     canvas.style.height=h+'px';
     ctx.setTransform(dpr,0,0,dpr,0,0);
+    lightingKey='';
     buildGalaxy();
   }
   schedule();
@@ -218,8 +229,20 @@ function eraseEarth(g){
   ctx.restore();
 }
 
+function lightingCacheKey(state,size){
+  return[
+    size,
+    Math.round(state.lx*10000),
+    Math.round(state.ly*10000),
+    Math.round(state.lz*10000)
+  ].join(':');
+}
+
 function buildEarthLighting(state){
   const size=clamp(Math.round(state.r*.72),128,224);
+  const key=lightingCacheKey(state,size);
+  if(lightCanvas.width===size&&lightCanvas.height===size&&lightingKey===key)return;
+
   if(lightCanvas.width!==size||lightCanvas.height!==size){
     lightCanvas.width=size;
     lightCanvas.height=size;
@@ -242,23 +265,25 @@ function buildEarthLighting(state){
 
       let alpha=0;
       if(ndl<=-eps){
-        const depth=clamp((-ndl-eps)/(1-eps),0,1);
-        alpha=.49+.08*depth;
+        /* Full night hemisphere: no grey cap, no washed-out map. */
+        alpha=MAX_NIGHT_ALPHA;
       }else if(ndl<eps){
+        /* Keep the terminator physically smooth but narrow. */
         const t=clamp((eps-ndl)/(2*eps),0,1);
         alpha=MAX_NIGHT_ALPHA*smoothstep(t);
       }
 
       if(alpha<=0)continue;
       const i=(py*size+px)*4;
-      data[i]=2;
-      data[i+1]=8;
-      data[i+2]=20;
+      data[i]=0;
+      data[i+1]=2;
+      data[i+2]=8;
       data[i+3]=Math.round(clamp(alpha,0,MAX_NIGHT_ALPHA)*255);
     }
   }
 
   lightCtx.putImageData(image,0,0);
+  lightingKey=key;
 }
 
 function drawEarthLighting(state){
@@ -278,14 +303,220 @@ function hideLegacyLighting(){
   }catch(e){}
 }
 
-function render(){
+function fadeWindow(t){
+  return clamp(Math.min(t/.16,(1-t)/.18),0,1);
+}
+
+function spawnMeteor(){
+  clearTimeout(meteorTimer);
+  if(!motionAllowed())return;
+  if(document.hidden){
+    scheduleNextMeteor(5000);
+    return;
+  }
+
+  const now=performance.now();
+  const fromLeft=Math.random()>.5;
+  const y=.08*h+Math.random()*.62*h;
+  const dx=(.38+Math.random()*.34)*w*(fromLeft?1:-1);
+  const dy=(.08+Math.random()*.18)*h;
+  const x=fromLeft?(-90-Math.random()*80):(w+90+Math.random()*80);
+  const travelX=fromLeft?dx:-Math.abs(dx);
+  const travelY=dy*(Math.random()>.18?1:-.55);
+  meteors.push({
+    born:now,
+    duration:850+Math.random()*750,
+    x,y,
+    dx:travelX,
+    dy:travelY,
+    length:55+Math.random()*70,
+    width:.8+Math.random()*1.15,
+    hue:Math.random()>.72?'190,220,255':'230,235,255'
+  });
+
+  if(Math.random()>.78){
+    meteors.push({
+      born:now+120+Math.random()*180,
+      duration:720+Math.random()*580,
+      x:x+(fromLeft?-30:30),
+      y:y+25+Math.random()*70,
+      dx:travelX*.82,
+      dy:travelY*.84,
+      length:38+Math.random()*48,
+      width:.7+Math.random()*.7,
+      hue:'205,220,255'
+    });
+  }
+
+  schedule();
+  scheduleNextMeteor();
+}
+
+function scheduleNextMeteor(delay){
+  clearTimeout(meteorTimer);
+  if(!motionAllowed())return;
+  const ms=delay??(5200+Math.random()*7200);
+  meteorTimer=setTimeout(spawnMeteor,ms);
+}
+
+function drawMeteors(now){
+  const next=[];
+  for(const m of meteors){
+    const t=(now-m.born)/m.duration;
+    if(t<0){next.push(m);continue}
+    if(t>=1)continue;
+    next.push(m);
+
+    const p=easeInOut(clamp(t,0,1));
+    const x=m.x+m.dx*p;
+    const y=m.y+m.dy*p;
+    const mag=Math.hypot(m.dx,m.dy)||1;
+    const ux=m.dx/mag,uy=m.dy/mag;
+    const tailX=x-ux*m.length;
+    const tailY=y-uy*m.length;
+    const alpha=fadeWindow(t)*.92;
+
+    const gr=ctx.createLinearGradient(tailX,tailY,x,y);
+    gr.addColorStop(0,`rgba(${m.hue},0)`);
+    gr.addColorStop(.72,`rgba(${m.hue},${alpha*.38})`);
+    gr.addColorStop(1,`rgba(255,255,255,${alpha})`);
+    ctx.save();
+    ctx.strokeStyle=gr;
+    ctx.lineWidth=m.width;
+    ctx.lineCap='round';
+    ctx.shadowColor='rgba(150,190,255,.75)';
+    ctx.shadowBlur=7;
+    ctx.beginPath();
+    ctx.moveTo(tailX,tailY);
+    ctx.lineTo(x,y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  meteors=next;
+}
+
+function spawnUfo(){
+  clearTimeout(ufoTimer);
+  if(!motionAllowed())return;
+  if(document.hidden){
+    scheduleNextUfo(12000);
+    return;
+  }
+
+  const fromLeft=Math.random()>.5;
+  const margin=90;
+  ufo={
+    born:performance.now(),
+    duration:6200+Math.random()*3200,
+    fromX:fromLeft?-margin:w+margin,
+    toX:fromLeft?w+margin:-margin,
+    y:.16*h+Math.random()*.43*h,
+    wave:8+Math.random()*16,
+    size:16+Math.random()*8,
+    phase:Math.random()*TAU
+  };
+  schedule();
+  scheduleNextUfo();
+}
+
+function scheduleNextUfo(delay){
+  clearTimeout(ufoTimer);
+  if(!motionAllowed())return;
+  const ms=delay??(30000+Math.random()*42000);
+  ufoTimer=setTimeout(spawnUfo,ms);
+}
+
+function drawUfo(now){
+  if(!ufo)return;
+  const t=(now-ufo.born)/ufo.duration;
+  if(t<0||t>=1){
+    if(t>=1)ufo=null;
+    return;
+  }
+
+  const p=easeInOut(t);
+  const x=ufo.fromX+(ufo.toX-ufo.fromX)*p;
+  const y=ufo.y+Math.sin(p*TAU*1.3+ufo.phase)*ufo.wave;
+  const s=ufo.size;
+  const alpha=fadeWindow(t)*.82;
+  const dir=Math.sign(ufo.toX-ufo.fromX)||1;
+
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate(dir*.055);
+  ctx.globalAlpha=alpha;
+
+  const beam=ctx.createLinearGradient(0,s*.35,0,s*2.3);
+  beam.addColorStop(0,'rgba(112,255,226,.22)');
+  beam.addColorStop(1,'rgba(112,255,226,0)');
+  ctx.fillStyle=beam;
+  ctx.beginPath();
+  ctx.moveTo(-s*.62,s*.25);
+  ctx.lineTo(s*.62,s*.25);
+  ctx.lineTo(s*1.1,s*2.25);
+  ctx.lineTo(-s*1.1,s*2.25);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.shadowColor='rgba(111,255,229,.72)';
+  ctx.shadowBlur=10;
+  ctx.fillStyle='rgba(152,255,235,.82)';
+  ctx.beginPath();
+  ctx.ellipse(0,s*.18,s*.9,s*.22,0,0,TAU);
+  ctx.fill();
+
+  ctx.shadowBlur=4;
+  const hull=ctx.createLinearGradient(0,-s*.25,0,s*.42);
+  hull.addColorStop(0,'rgba(235,245,255,.96)');
+  hull.addColorStop(.5,'rgba(126,149,168,.95)');
+  hull.addColorStop(1,'rgba(40,57,72,.96)');
+  ctx.fillStyle=hull;
+  ctx.beginPath();
+  ctx.ellipse(0,0,s*1.35,s*.42,0,0,TAU);
+  ctx.fill();
+
+  const dome=ctx.createRadialGradient(-s*.16,-s*.34,1,0,-s*.12,s*.72);
+  dome.addColorStop(0,'rgba(224,250,255,.92)');
+  dome.addColorStop(1,'rgba(82,151,178,.42)');
+  ctx.fillStyle=dome;
+  ctx.beginPath();
+  ctx.ellipse(0,-s*.18,s*.58,s*.42,0,Math.PI,TAU);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle='rgba(111,255,229,.95)';
+  for(const lx of [-.75,-.3,.3,.75]){
+    ctx.beginPath();
+    ctx.arc(s*lx,s*.16,Math.max(1,s*.055),0,TAU);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawSpaceEffects(now){
+  if(!motionAllowed()){
+    meteors=[];
+    ufo=null;
+    return;
+  }
+  drawMeteors(now);
+  drawUfo(now);
+}
+
+function hasMovingEffects(){
+  return meteors.length>0||!!ufo;
+}
+
+function render(now=performance.now()){
   raf=0;
   if(!canvas||!ctx)return;
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
 
-  /* Galaxy is permanent and remains visible even with realtime astronomy off. */
+  /* Galaxy + rare animated visitors stay visible even when realtime astronomy is off. */
   if(galaxy)ctx.drawImage(galaxy,0,0,galaxy.width,galaxy.height,0,0,w,h);
+  drawSpaceEffects(now);
 
   const state=sunState();
   const enabled=astronomyEnabled();
@@ -293,15 +524,16 @@ function render(){
   /* Far-side Sun first; erasing the Earth disc gives natural eclipse occlusion. */
   if(enabled&&state.depth<0)drawSun(state.x,state.y,state.sunR);
 
-  /* Keep the map globe clear of the Galaxy overlay in both toggle states. */
+  /* Keep the map globe clear of every background effect in both toggle states. */
   eraseEarth(state);
 
-  if(!enabled)return;
+  if(enabled){
+    /* Same solar vector drives Sun position and the dark hemisphere. */
+    drawEarthLighting(state);
+    if(state.depth>=0)drawSun(state.x,state.y,state.sunR);
+  }
 
-  /* Single source of truth: the same solar vector drives Sun position and Earth light. */
-  drawEarthLighting(state);
-
-  if(state.depth>=0)drawSun(state.x,state.y,state.sunR);
+  if(hasMovingEffects()&&!document.hidden)raf=requestAnimationFrame(render);
 }
 
 function schedule(){
@@ -330,11 +562,18 @@ function accelerateRealtime(){
         hideLegacyLighting();
       }
       if(current)updateNowPlayingMarker(current);
+      lightingKey='';
       schedule();
     },15000);
   }catch(e){
     setInterval(schedule,15000);
   }
+}
+
+function startSpaceEffects(){
+  if(!motionAllowed())return;
+  scheduleNextMeteor(1800+Math.random()*2600);
+  scheduleNextUfo(12000+Math.random()*18000);
 }
 
 function start(){
@@ -349,10 +588,10 @@ function start(){
     updateSunVisual=schedule;
   }catch(e){}
 
-  map.on('move',schedule);
-  map.on('zoom',schedule);
+  map.on('move',()=>{lightingKey='';schedule()});
+  map.on('zoom',()=>{lightingKey='';schedule()});
   map.on('resize',resize);
-  map.on('moveend',()=>{hideLegacyLighting();schedule()});
+  map.on('moveend',()=>{hideLegacyLighting();lightingKey='';schedule()});
 
   const ready=()=>{
     resize();
@@ -360,14 +599,22 @@ function start(){
     accelerateRealtime();
     try{syncDayNight()}catch(e){}
     hideLegacyLighting();
+    lightingKey='';
     schedule();
+    startSpaceEffects();
   };
 
   if(map.loaded())ready();
   else map.once('load',ready);
 
   window.addEventListener('orientationchange',()=>setTimeout(resize,120),{passive:true});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule()});
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden){
+      schedule();
+      if(motionAllowed()&&!meteorTimer)scheduleNextMeteor(1200);
+      if(motionAllowed()&&!ufoTimer)scheduleNextUfo(8000);
+    }
+  });
   setInterval(schedule,5000);
 }
 
