@@ -3,9 +3,13 @@
 
 const DEG=Math.PI/180;
 const TAU=Math.PI*2;
-const TWILIGHT_EPSILON=0.045;
+const TWILIGHT_DAY_EDGE=0.035;
+const TWILIGHT_NIGHT_EDGE=-0.12;
+const NIGHT_BASE_ALPHA=0.43;
 const MAX_NIGHT_ALPHA=0.57;
 const LIGHTING_RADIUS_SCALE=1.055;
+const LIGHTING_MIN_RES=320;
+const LIGHTING_MAX_RES=720;
 
 let canvas,ctx,galaxy,galaxyCtx,lightCanvas,lightCtx;
 let raf=0,w=0,h=0,dpr=1,started=false;
@@ -108,7 +112,6 @@ function earthGeometry(){
   let radius=0;
   if(radii.length>=4){
     radii.sort((a,b)=>a-b);
-    /* Upper quartile prevents the shadow mask from falling short of the visible globe rim on iOS. */
     radius=radii[Math.min(radii.length-1,Math.floor(radii.length*.75))];
   }
   if(!Number.isFinite(radius)||radius<18)radius=Math.min(w,h)*.335*Math.pow(2,map.getZoom()-1.65);
@@ -135,31 +138,59 @@ function eraseEarth(g){
   ctx.save();ctx.globalCompositeOperation='destination-out';ctx.beginPath();ctx.arc(g.cx,g.cy,g.r*1.012,0,TAU);ctx.fill();ctx.restore();
 }
 
-function lightingCacheKey(state,size){
-  return[size,Math.round(state.lx*10000),Math.round(state.ly*10000),Math.round(state.lz*10000)].join(':');
+function lightingCacheKey(state,size,moving){
+  return[size,moving?1:0,Math.round(state.lx*4000),Math.round(state.ly*4000),Math.round(state.lz*4000)].join(':');
+}
+
+function shadowAlphaFromNdl(ndl){
+  if(ndl>=TWILIGHT_DAY_EDGE)return 0;
+  if(ndl<=TWILIGHT_NIGHT_EDGE){
+    const depth=clamp((-ndl-Math.abs(TWILIGHT_NIGHT_EDGE))/(1-Math.abs(TWILIGHT_NIGHT_EDGE)),0,1);
+    return NIGHT_BASE_ALPHA+(MAX_NIGHT_ALPHA-NIGHT_BASE_ALPHA)*smoothstep(depth);
+  }
+  const t=clamp((TWILIGHT_DAY_EDGE-ndl)/(TWILIGHT_DAY_EDGE-TWILIGHT_NIGHT_EDGE),0,1);
+  return NIGHT_BASE_ALPHA*smoothstep(t);
+}
+
+function sampleShadowAlpha(sx,sy,state){
+  const rr=sx*sx+sy*sy;
+  if(rr>1)return 0;
+  const sz=Math.sqrt(Math.max(0,1-rr));
+  const ndl=sx*state.lx+sy*state.ly+sz*state.lz;
+  return shadowAlphaFromNdl(ndl);
 }
 
 function buildEarthLighting(state){
   const drawR=state.r*LIGHTING_RADIUS_SCALE;
-  const size=clamp(Math.round(drawR*.72),128,224),key=lightingCacheKey(state,size);
+  const moving=typeof map.isMoving==='function'&&map.isMoving();
+  const scale=moving?.95:1.55;
+  const minRes=moving?240:LIGHTING_MIN_RES;
+  const maxRes=moving?420:LIGHTING_MAX_RES;
+  const size=clamp(Math.round(drawR*scale),minRes,maxRes),key=lightingCacheKey(state,size,moving);
   if(lightCanvas.width===size&&lightCanvas.height===size&&lightingKey===key)return drawR;
   if(lightCanvas.width!==size||lightCanvas.height!==size){lightCanvas.width=size;lightCanvas.height=size}
-  const image=lightCtx.createImageData(size,size),data=image.data,half=size/2,eps=TWILIGHT_EPSILON;
+
+  const image=lightCtx.createImageData(size,size),data=image.data,half=size/2;
+  const quarterPixel=.28/half;
   for(let py=0;py<size;py++){
     const sy=(half-(py+.5))/half;
     for(let px=0;px<size;px++){
       const sx=((px+.5)-half)/half,rr=sx*sx+sy*sy;
       if(rr>1)continue;
-      const sz=Math.sqrt(Math.max(0,1-rr)),ndl=sx*state.lx+sy*state.ly+sz*state.lz;
-      let alpha=0;
-      if(ndl<=-eps){
-        /* Restore the earlier gentle darkness, while still covering the full night hemisphere. */
-        const nightDepth=clamp((-ndl-eps)/(1-eps),0,1);
-        alpha=.43+.14*nightDepth;
-      }else if(ndl<eps){
-        const t=clamp((eps-ndl)/(2*eps),0,1);
-        alpha=MAX_NIGHT_ALPHA*smoothstep(t);
+      const sz=Math.sqrt(Math.max(0,1-rr));
+      const ndl=sx*state.lx+sy*state.ly+sz*state.lz;
+      let alpha=shadowAlphaFromNdl(ndl);
+
+      /* 2x2 supersampling is reserved for the terminator and globe rim, where aliasing is visible. */
+      if((ndl>TWILIGHT_NIGHT_EDGE-.05&&ndl<TWILIGHT_DAY_EDGE+.05)||rr>.94){
+        alpha=(
+          sampleShadowAlpha(sx-quarterPixel,sy-quarterPixel,state)+
+          sampleShadowAlpha(sx+quarterPixel,sy-quarterPixel,state)+
+          sampleShadowAlpha(sx-quarterPixel,sy+quarterPixel,state)+
+          sampleShadowAlpha(sx+quarterPixel,sy+quarterPixel,state)
+        )*.25;
       }
+
       if(alpha<=0)continue;
       const i=(py*size+px)*4;
       data[i]=2;data[i+1]=8;data[i+2]=20;data[i+3]=Math.round(clamp(alpha,0,MAX_NIGHT_ALPHA)*255);
@@ -170,7 +201,11 @@ function buildEarthLighting(state){
 
 function drawEarthLighting(state){
   const drawR=buildEarthLighting(state);
-  ctx.save();ctx.imageSmoothingEnabled=true;ctx.drawImage(lightCanvas,state.cx-drawR,state.cy-drawR,drawR*2,drawR*2);ctx.restore();
+  ctx.save();
+  ctx.imageSmoothingEnabled=true;
+  try{ctx.imageSmoothingQuality='high'}catch(e){}
+  ctx.drawImage(lightCanvas,state.cx-drawR,state.cy-drawR,drawR*2,drawR*2);
+  ctx.restore();
 }
 
 function hideLegacyLighting(){
